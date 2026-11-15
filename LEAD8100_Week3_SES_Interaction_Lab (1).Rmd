@@ -1,0 +1,190 @@
+---
+title: "LEAD 8100 Week 3 Short Lab: SES and Treatment"
+output:
+  word_document:
+    toc: true
+    toc_depth: 2
+---
+
+# Data and teaching purpose
+
+Import **STeLLA_merged_binary_SES.xlsx**, first worksheet, through RStudio's
+**Import Dataset > From Excel** menu. Set the imported object's name to
+**STeLLA_merged_binary_SES**. The new `SES_high` column is numeric: **0 = Low SES,
+1 = High SES**.
+
+In this short lab, test whether the within-school High-versus-Low SES difference
+in POST varies by treatment condition. Use the 2,823 complete students in
+77 schools. Work through the code and answer the questions at the end.
+
+# Setup and analytic sample
+
+If needed, install `dplyr`, `lmerTest`, and `rmarkdown` once in the Console before
+running this document. There are no installation commands in the analytic chunks.
+
+```{r setup, message=FALSE}
+#Chunk 1
+
+library(dplyr)
+library(lmerTest)
+knitr::opts_chunk$set(echo = TRUE, fig.width = 7, fig.height = 4.5)
+
+student_data <- STeLLA_merged_binary_SES |>
+  transmute(
+    SchoolID = factor(SchoolID), StudentID, PRE, POST,
+    TREAT = School_TREAT, MEANPRE = School_MEANPRE,
+    SES_high
+  ) |>
+  filter(complete.cases(SchoolID, StudentID, PRE, POST, TREAT,
+                        MEANPRE, SES_high))
+
+stopifnot(
+  nrow(student_data) == 2823,
+  n_distinct(student_data$StudentID) == 2823,
+  n_distinct(student_data$SchoolID) == 77,
+  all(student_data$TREAT %in% 0:1),
+  all(student_data$SES_high %in% 0:1)
+)
+print(c(Students = nrow(student_data),
+        Schools = n_distinct(student_data$SchoolID)))
+with(student_data, table(TREAT, SES_high))
+```
+
+# Center the student predictors
+
+PRE and SES are centered within school. TREAT stays uncentered (0/1) so that
+the SES coefficient directly gives the high-low difference in comparison schools.
+The mean of a binary indicator is a proportion.
+
+```{r centering}
+#Chunk 2
+
+student_data <- student_data |>
+  group_by(SchoolID) |>
+  mutate(
+    PRE_w = PRE - mean(PRE),
+    SES_school = mean(SES_high),
+    SES_w = SES_high - SES_school
+  ) |>
+  ungroup()
+
+# Confirm that centered predictors average to zero within schools.
+student_data |>
+  group_by(SchoolID) |>
+  summarise(Mean_PRE_w = mean(PRE_w), Mean_SES_w = mean(SES_w)) |>
+  summarise(Max_abs_PRE = max(abs(Mean_PRE_w)),
+            Max_abs_SES = max(abs(Mean_SES_w)))
+```
+
+Within one school, moving from Low to High SES always increases `SES_w` by one.
+
+
+# Fit the models
+
+## Additive model
+
+```{r additive-model}
+
+#Chunk 3 - Main effects
+ses_main_effects <- lmer(
+  POST ~ PRE_w + TREAT + SES_w + (1 | SchoolID),
+  data = student_data
+)
+summary(ses_main_effects)
+```
+
+## Cross-level interaction model
+
+Treatment is a school-level predictor and SES is a student-level predictor.
+The product tests whether treatment condition changes the within-school SES gap.
+
+```{r interaction-model}
+
+#Chunk 4 - interaction model
+ses_interaction <- lmer(
+  POST ~ PRE_w + TREAT * SES_w + (1 | SchoolID),
+  data = student_data
+)
+summary(ses_interaction)
+confint(ses_interaction, parm = "TREAT:SES_w", method = "Wald")
+```
+
+The fixed interaction allows different SES gaps by treatment condition.
+This primary model has random school intercepts, not random SES slopes.
+
+# Simple effects and interpretation
+
+```{r simple-effects}
+
+#Chunk 5
+
+b <- fixef(ses_interaction)
+
+c(
+  Comparison_high_minus_low = unname(b["SES_w"]),
+  STeLLA_high_minus_low = unname(b["SES_w"] + b["TREAT:SES_w"]),
+  Difference_in_SES_gaps = unname(b["TREAT:SES_w"])
+)
+
+# Satterthwaite tests and confidence intervals for each high-low contrast.
+comparison_contrast <- setNames(rep(0, length(b)), names(b))
+comparison_contrast["SES_w"] <- 1
+stella_contrast <- comparison_contrast
+stella_contrast["TREAT:SES_w"] <- 1
+
+lmerTest::contest1D(ses_interaction, comparison_contrast, confint = TRUE)
+lmerTest::contest1D(ses_interaction, stella_contrast, confint = TRUE)
+```
+
+# Plot adjusted cell means
+
+This plot holds PRE at the school mean (`PRE_w = 0`) and the school's High SES
+proportion at .50. Predictions exclude school-specific random intercepts.
+
+
+```{r adjusted-cell-means}
+
+#Chunk 6
+
+plot_data <- expand.grid(SES_high = c(0, 1), TREAT = c(0, 1))
+plot_data$PRE_w <- 0
+plot_data$SES_w <- plot_data$SES_high - 0.5
+plot_data$Predicted_POST <- predict(
+  ses_interaction, newdata = plot_data, re.form = NA
+)
+print(plot_data)
+
+plot(
+  c(0, 1), plot_data$Predicted_POST[plot_data$TREAT == 0],
+  type = "b", pch = 16, lwd = 2, col = "#266785",
+  xlim = c(-0.12, 1.12),
+  ylim = range(plot_data$Predicted_POST) + c(-2, 2), xaxt = "n",
+  xlab = "Simulated SES group", ylab = "Adjusted predicted POST",
+  main = "Economic Advantage across Treatment Conditions"
+)
+lines(
+  c(0, 1), plot_data$Predicted_POST[plot_data$TREAT == 1],
+  type = "b", pch = 17, lwd = 2, col = "#B04828"
+)
+axis(1, at = c(0, 1), labels = c("Low SES (0)", "High SES (1)"))
+text(
+  plot_data$SES_high, plot_data$Predicted_POST,
+  labels = sprintf("%.2f", plot_data$Predicted_POST),
+  pos = c(1, 1, 3, 3), cex = 0.85
+)
+legend(
+  "topleft", c("Comparison", "STeLLA"),
+  col = c("#266785", "#B04828"), pch = c(16, 17), lty = 1, bty = "n"
+)
+```
+
+# Lab questions
+
+1. Report the `TREAT:SES_w` estimate, standard error, p-value, and confidence interval.
+   Does the SES difference vary by treatment condition?
+2. Report the estimated High-minus-Low SES difference in each condition.
+   Explain the interaction in POST points.
+4. Use the labeled plot to explain how both SES differences can be positive
+   while the interaction is negative.
+
+
