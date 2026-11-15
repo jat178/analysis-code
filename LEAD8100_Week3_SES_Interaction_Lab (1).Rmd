@@ -8,6 +8,8 @@ output:
 
 # Data and teaching purpose
 
+#Adding Description that this is a cross-level interaction lab
+
 Import **STeLLA_merged_binary_SES.xlsx**, first worksheet, through RStudio's
 **Import Dataset > From Excel** menu. Set the imported object's name to
 **STeLLA_merged_binary_SES**. The new `SES_high` column is numeric: **0 = Low SES,
